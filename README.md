@@ -142,8 +142,22 @@ Go to **API permissions** → **+ Add a permission**:
 | Permission | Purpose |
 |---|---|
 | `User.Read` | Sign in and read user profile |
-| `Mail.Read` | Read user's mailbox (for MCP MailTools) |
+| `User.Read.All` | Read all users' profiles (for agent user lookup) |
+| `Mail.ReadWrite` | Read and write user's mailbox |
 | `Mail.Send` | Send mail on behalf of the user |
+| `Chat.ReadWrite` | Read and write Teams chat messages |
+| `Sites.Read.All` | Read SharePoint sites (for future integrations) |
+
+**Messaging Bot API (Delegated):**
+
+1. Click **+ Add a permission** → **APIs my organization uses**
+2. Search for **Messaging Bot API** (or `BotFramework`)
+3. Select **Delegated permissions** and add:
+
+| Permission | Purpose |
+|---|---|
+| `Authorization.ReadWrite` | Bot authorization for Teams messaging |
+| `user_impersonation` | Act on behalf of the user in Bot Framework |
 
 **MCP Server API (Delegated):**
 
@@ -156,7 +170,9 @@ Go to **API permissions** → **+ Add a permission**:
 | `McpServers.Mail.All` | Access MCP Mail tool server |
 | `McpServersMetadata.Read.All` | Read MCP server metadata |
 
-> 💡 These scopes match the `scope` and `audience` in `ToolingManifest.json`.
+> 💡 The MCP scopes match the `scope` and `audience` fields in `ToolingManifest.json`.
+> 
+> 💡 If you only need the Web Chat (no Teams integration), you can skip the Messaging Bot API permissions.
 
 #### 4.4 Grant Admin Consent
 
