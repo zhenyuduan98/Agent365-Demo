@@ -108,7 +108,82 @@ cp .env.template .env
 2. Deploy a GPT model (e.g., gpt-4o or gpt-5.2-chat)
 3. Copy the endpoint and API key to `.env`
 
-### 4. Setup Agent 365 Blueprint
+### 4. Register an App in Microsoft Entra ID
+
+Before setting up the Agent 365 Blueprint, you need to register an application in Microsoft Entra ID (Azure AD). This provides the `CLIENT_ID` and `CLIENT_SECRET` for authentication.
+
+#### 4.1 Create the App Registration
+
+1. Go to [Azure Portal](https://portal.azure.com) → **Microsoft Entra ID** → **App registrations** → **+ New registration**
+2. Fill in:
+   - **Name**: e.g., `Agent365-CLI-Client`
+   - **Supported account types**: **Accounts in this organizational directory only** (Single tenant)
+   - **Redirect URI**: Select **Public client/native (mobile & desktop)**, enter `http://localhost`
+3. Click **Register**
+4. On the **Overview** page, copy:
+   - **Application (client) ID** → this is your `CLIENT_ID`
+   - **Directory (tenant) ID** → this is your `TENANT_ID`
+
+#### 4.2 Create a Client Secret
+
+1. Go to **Certificates & secrets** → **Client secrets** → **+ New client secret**
+2. Enter a description (e.g., `agent-dev-secret`), choose expiration
+3. Click **Add**
+4. **Copy the secret Value immediately** (not the Secret ID) → this is your `CLIENT_SECRET`
+
+> ⚠️ The secret value is only displayed once. If you miss it, you'll need to create a new one.
+
+#### 4.3 Configure API Permissions (Delegated)
+
+Go to **API permissions** → **+ Add a permission**:
+
+**Microsoft Graph (Delegated):**
+
+| Permission | Purpose |
+|---|---|
+| `User.Read` | Sign in and read user profile |
+| `Mail.Read` | Read user's mailbox (for MCP MailTools) |
+| `Mail.Send` | Send mail on behalf of the user |
+
+**MCP Server API (Delegated):**
+
+1. Click **+ Add a permission** → **APIs my organization uses**
+2. Search for the MCP server app by its audience ID: `05879165-0320-489e-b644-f72b33f3edf0`
+3. Select **Delegated permissions** and add:
+
+| Permission | Purpose |
+|---|---|
+| `McpServers.Mail.All` | Access MCP Mail tool server |
+| `McpServersMetadata.Read.All` | Read MCP server metadata |
+
+> 💡 These scopes match the `scope` and `audience` in `ToolingManifest.json`.
+
+#### 4.4 Grant Admin Consent
+
+Click **Grant admin consent for [your tenant]** (requires Global Admin or Privileged Role Admin).
+
+Verify all permissions show ✅ green checkmarks under the **Status** column.
+
+#### 4.5 Configure Service Connection in `.env`
+
+```env
+# App Registration
+CLIENT_ID=<your-application-client-id>
+CLIENT_SECRET=<your-client-secret-value>
+TENANT_ID=<your-directory-tenant-id>
+
+# Service Connection (used by M365 Agents SDK for outbound auth)
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID=<same-client-id>
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET=<same-client-secret>
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID=<same-tenant-id>
+CONNECTIONS__SERVICE_CONNECTION__SETTINGS__SCOPES=https://graph.microsoft.com/.default
+CONNECTIONSMAP_0_SERVICEURL=*
+CONNECTIONSMAP_0_CONNECTION=SERVICE_CONNECTION
+```
+
+> The `CONNECTIONS__*` variables map to the M365 Agents SDK connection config. `CONNECTIONSMAP_0_SERVICEURL=*` means this connection handles all outbound service URLs.
+
+### 5. Setup Agent 365 Blueprint
 
 ```bash
 # Install A365 CLI
@@ -128,7 +203,7 @@ a365 develop get-token --scope McpServers.Mail.All
 # Copy the token to MCP_BEARER_TOKEN in .env
 ```
 
-### 5. Run the Agent
+### 6. Run the Agent
 
 ```bash
 # Option A: Teams integration (port 3978)
@@ -138,7 +213,7 @@ python -m host_agent_server
 python web_chat.py
 ```
 
-### 6. Setup HTTPS Tunnel (for Teams)
+### 7. Setup HTTPS Tunnel (for Teams)
 
 ```bash
 # Install ngrok
@@ -148,7 +223,7 @@ ngrok http 3978
 a365 setup blueprint --endpoint-only --endpoint https://<ngrok-url>/api/messages
 ```
 
-### 7. Publish to Teams
+### 8. Publish to Teams
 
 ```bash
 # Generate Teams manifest
@@ -158,7 +233,7 @@ a365 publish
 # admin.microsoft.com → Settings → Integrated apps → Upload custom apps
 ```
 
-### 8. Create Agent Instance (for authenticated responses)
+### 9. Create Agent Instance (for authenticated responses)
 
 ```bash
 # Create agent instance for Teams authentication
@@ -184,6 +259,10 @@ Agent 365 CLI configuration — tenant, subscription, resource group, blueprint 
 2. **ngrok URL Changes**: Free ngrok URLs change on restart. Re-register endpoint with `a365 setup blueprint --endpoint-only`.
 3. **Teams 401 Error**: Agent needs an Agent Instance + Agent User for authenticated replies in Teams.
 4. **SDK Naming**: The `ChatAgent` class was renamed to `Agent` in recent SDK versions.
+
+5. **`AADSTS65001` consent error**: Go to API permissions → click **Grant admin consent**.
+6. **`AADSTS7000215` invalid client secret**: Make sure you copied the **Value**, not the **Secret ID**. Regenerate if needed.
+7. **`Directory.AccessAsUser.All` blocking blueprint creation**: This permission may be injected by WAM. Clear token cache and re-authenticate.
 
 ## 🛠️ Tech Stack
 
