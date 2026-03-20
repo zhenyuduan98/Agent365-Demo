@@ -141,12 +141,11 @@ Go to **API permissions** → **+ Add a permission**:
 
 | Permission | Purpose |
 |---|---|
-| `User.Read` | Sign in and read user profile |
-| `User.Read.All` | Read all users' profiles (for agent user lookup) |
-| `Mail.ReadWrite` | Read and write user's mailbox |
-| `Mail.Send` | Send mail on behalf of the user |
-| `Chat.ReadWrite` | Read and write Teams chat messages |
-| `Sites.Read.All` | Read SharePoint sites (for future integrations) |
+| `Application.ReadWrite.All` | Manage app registrations (required by A365 CLI) |
+| `AgentIdentityBlueprint.ReadWrite.All` | Create and manage Agent 365 Blueprints |
+| `AgentIdentityBlueprint.UpdateAuthProperties.All` | Update Blueprint authentication properties |
+| `DelegatedPermissionGrant.ReadWrite.All` | Grant delegated permissions programmatically |
+| `Directory.Read.All` | Read directory data (users, groups, service principals) |
 
 **Messaging Bot API (Delegated):**
 
