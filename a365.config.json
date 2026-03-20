@@ -1,0 +1,18 @@
+{
+  "tenantId": "<YOUR_TENANT_ID>",
+  "subscriptionId": "<YOUR_SUBSCRIPTION_ID>",
+  "resourceGroup": "<YOUR_RESOURCE_GROUP>",
+  "location": "eastus",
+  "environment": "prod",
+  "messagingEndpoint": "http://localhost:3978/api/messages",
+  "needDeployment": false,
+  "clientAppId": "<YOUR_CLIENT_APP_ID>",
+  "agentIdentityDisplayName": "Agent365MailDemo Identity",
+  "agentBlueprintDisplayName": "Agent365MailDemo Blueprint",
+  "agentUserPrincipalName": "<YOUR_AGENT_UPN>",
+  "agentUserDisplayName": "Agent365MailDemo Agent User",
+  "managerEmail": "<YOUR_MANAGER_EMAIL>",
+  "agentUserUsageLocation": "US",
+  "deploymentProjectPath": ".",
+  "agentDescription": "Agent365MailDemo - Agent 365 Agent"
+}
