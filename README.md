@@ -2,7 +2,7 @@
 
 ## 📖 Overview
 
-This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's next-generation agent platform for building AI agents that integrate with Microsoft 365 services. The agent uses Azure OpenAI GPT models and MCP (Model Context Protocol) MailTools to read and manage Outlook emails.
+This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's next-generation agent platform for building AI agents that integrate with Microsoft 365 services. The agent uses Azure OpenAI GPT models and MCP (Model Context Protocol) to connect with multiple Microsoft 365 services including Outlook Mail, Calendar, Teams, Word, Excel, and Planner.
 
 > 🎤 Built for a TechTalk presentation demonstrating end-to-end Agent 365 deployment.
 
@@ -15,27 +15,43 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 └──────────────┘     └────────┬─────────┘     └─────────────────┘
                               │
                      ┌────────▼─────────┐
-                     │  MCP MailTools   │
-                     │  (Outlook Email) │
+                     │  MCP Servers     │
+                     │  (M365 Services) │
                      └──────────────────┘
 
 ┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │  Web Browser │────▶│  Web Chat Server │────▶│  Azure OpenAI   │
 │              │◀────│  (aiohttp:3979)  │◀────│  (GPT-5.2-chat) │
-└──────────────┘     └──────────────────┘     └─────────────────┘
+└──────────────┘     └────────┬─────────┘     └─────────────────┘
+                              │
+                     ┌────────▼─────────┐
+                     │  MCP Servers     │
+                     │  (M365 Services) │
+                     └──────────────────┘
 ```
+
+### MCP Servers Integrated
+
+| MCP Server | Scope | Capability |
+|---|---|---|
+| `mcp_MailTools` | `McpServers.Mail.All` | Read/write Outlook emails |
+| `mcp_CalendarTools` | `McpServers.Calendar.All` | Manage calendar events |
+| `mcp_TeamsServer` | `McpServers.Teams.All` | Teams messaging operations |
+| `mcp_WordServer` | `McpServers.Word.All` | Word document operations |
+| `mcp_ExcelServer` | `McpServers.Excel.All` | Excel spreadsheet operations |
+| `mcp_PlannerServer` | `McpServers.Planner.All` | Planner task management |
 
 ## 📦 Components
 
 | Component | File | Description |
 |---|---|---|
-| Agent Core | `agent.py` | Main agent logic with Azure OpenAI + MCP integration |
+| Agent Core | `agent.py` | Main agent logic with Azure OpenAI + MCP integration (Teams path) |
 | Agent Interface | `agent_interface.py` | Abstract base class for agent implementations |
 | Agent Host | `host_agent_server.py` | Generic host server for Teams messaging (port 3978) |
-| Web Chat | `web_chat.py` | Standalone web chat UI with SQLite history (port 3979) |
+| Web Chat | `web_chat.py` | Web chat UI with MCP + conversation memory + SQLite history (port 3979) |
 | Auth Options | `local_authentication_options.py` | Local/dev authentication configuration |
 | Token Cache | `token_cache.py` | In-memory token caching for observability |
-| Tooling Manifest | `ToolingManifest.json` | MCP server configuration (MailTools) |
+| Tooling Manifest | `ToolingManifest.json` | MCP server configuration (6 servers) |
 | Teams Manifest | `manifest/manifest.json` | Teams app manifest for deployment |
 | A365 Config | `a365.config.json` | Agent 365 CLI configuration |
 
@@ -46,7 +62,7 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 | Agent Host Server | Azure VM (Ubuntu 22.04) | Runs on port 3978 |
 | Web Chat Server | Azure VM (Ubuntu 22.04) | Runs on port 3979 |
 | Azure OpenAI | Azure East US 2 | GPT-5.2-chat deployment |
-| MCP MailTools | Microsoft Cloud | `agent365.svc.cloud.microsoft` |
+| MCP Servers | Microsoft Cloud | `agent365.svc.cloud.microsoft` |
 | Teams App | M365 Admin Center | Published via manifest.zip |
 | HTTPS Tunnel | ngrok | Exposes localhost:3978 to Teams |
 
@@ -58,9 +74,9 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 3. `host_agent_server.py` receives the activity via Microsoft Agents SDK
 4. JWT authentication validates the request
 5. Agent host extracts user message and passes to `agent.py`
-6. `agent.py` initializes MCP servers (first message only) — connects to MCP MailTools
+6. `agent.py` initializes MCP servers (first message only) — connects to all 6 MCP servers
 7. Agent sends user message + MCP tools to Azure OpenAI
-8. Azure OpenAI processes and may call MCP tools (e.g., read emails)
+8. Azure OpenAI processes and may call MCP tools (e.g., read emails, check calendar)
 9. MCP tool results are fed back to Azure OpenAI for final response
 10. Response is sent back through the Agent SDK → Teams
 
@@ -68,9 +84,11 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 1. User opens browser → `http://<VM_IP>:3979`
 2. `web_chat.py` serves the HTML/JS chat UI
 3. User sends message → POST `/api/chat`
-4. Message saved to SQLite, sent to Azure OpenAI via Agent Framework
-5. Response saved to SQLite, returned as JSON
-6. UI renders the response
+4. Message saved to SQLite; last 20 messages loaded as conversation context
+5. Agent receives full conversation history + MCP tools, sends to Azure OpenAI
+6. Azure OpenAI processes (may call MCP tools), returns response
+7. Response saved to SQLite, returned as JSON
+8. UI renders the response
 
 ## ✅ Prerequisites
 
@@ -100,6 +118,7 @@ cp .env.template .env
 # - AZURE_OPENAI_API_KEY, ENDPOINT, DEPLOYMENT, API_VERSION
 # - CLIENT_ID, CLIENT_SECRET, TENANT_ID (from Agent 365 Blueprint)
 # - MCP_BEARER_TOKEN (from `a365 develop get-token`)
+# - MCP_ENABLE=true (to enable MCP in web_chat.py)
 ```
 
 ### 3. Deploy Azure OpenAI
@@ -161,12 +180,17 @@ Go to **API permissions** → **+ Add a permission**:
 **MCP Server API (Delegated):**
 
 1. Click **+ Add a permission** → **APIs my organization uses**
-2. Search for the MCP server app by its audience ID: `05879165-0320-489e-b644-f72b33f3edf0`
+2. Search for the MCP server app by its audience ID: `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1` (Agent 365 Tools)
 3. Select **Delegated permissions** and add:
 
 | Permission | Purpose |
 |---|---|
 | `McpServers.Mail.All` | Access MCP Mail tool server |
+| `McpServers.Calendar.All` | Access MCP Calendar tool server |
+| `McpServers.Teams.All` | Access MCP Teams tool server |
+| `McpServers.Word.All` | Access MCP Word tool server |
+| `McpServers.Excel.All` | Access MCP Excel tool server |
+| `McpServers.Planner.All` | Access MCP Planner tool server |
 | `McpServersMetadata.Read.All` | Read MCP server metadata |
 
 > 💡 The MCP scopes match the `scope` and `audience` fields in `ToolingManifest.json`.
@@ -213,8 +237,8 @@ a365 setup blueprint \
   --subscription-id <YOUR_SUBSCRIPTION_ID> \
   --resource-group <YOUR_RESOURCE_GROUP>
 
-# Get MCP token (for MailTools)
-a365 develop get-token --scope McpServers.Mail.All
+# Get MCP token (for all MCP servers)
+a365 develop get-token --scopes McpServers.Mail.All McpServers.Calendar.All McpServers.Teams.All McpServers.Word.All McpServers.Excel.All McpServers.Planner.All McpServersMetadata.Read.All
 # Copy the token to MCP_BEARER_TOKEN in .env
 ```
 
@@ -257,36 +281,56 @@ a365 setup instance \
   --tenant-id <YOUR_TENANT_ID>
 ```
 
+## 🔑 MCP Token Refresh
+
+The MCP bearer token expires after **1 hour**. To refresh:
+
+```powershell
+# On Windows (where a365 CLI is installed):
+
+# Step 1: Clear token cache
+Remove-Item "$env:LOCALAPPDATA\Microsoft.Agents.A365.DevTools.Cli" -Recurse -Force
+Remove-Item "$env:LOCALAPPDATA\.IdentityService" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:LOCALAPPDATA\Microsoft\TokenBroker\Cache" -Recurse -Force -ErrorAction SilentlyContinue
+
+# Step 2: Get new token (will open login window)
+a365 develop get-token --scopes McpServers.Mail.All McpServers.Calendar.All McpServers.Teams.All McpServers.Word.All McpServers.Excel.All McpServers.Planner.All McpServersMetadata.Read.All -o raw --force-refresh
+
+# Step 3: Update MCP_BEARER_TOKEN in .env on the VM
+# Step 4: Restart web_chat.py
+```
+
 ## ⚙️ Key Configuration Files
 
 ### `.env` (from `.env.template`)
-Contains all secrets — Azure OpenAI keys, Client credentials, MCP tokens.
+Contains all secrets — Azure OpenAI keys, Client credentials, MCP tokens, and `MCP_ENABLE=true/false`.
 
 ### `ToolingManifest.json`
-Defines MCP server connections. Used when `ENVIRONMENT=Development`.
+Defines MCP server connections (6 servers). Used when `ENVIRONMENT=Development`.
+- **audience**: `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1` (Agent 365 Tools MCP resource)
 
 ### `a365.config.json`
 Agent 365 CLI configuration — tenant, subscription, resource group, blueprint details.
 
 ## ⚠️ Known Issues & Notes
 
-1. **MCP Token Expiry**: The MCP bearer token expires after 1 hour. Run `a365 develop get-token` to refresh.
+1. **MCP Token Expiry**: The MCP bearer token expires after 1 hour. Run `a365 develop get-token` to refresh. Must clear WAM cache first to avoid getting stale tokens.
 2. **ngrok URL Changes**: Free ngrok URLs change on restart. Re-register endpoint with `a365 setup blueprint --endpoint-only`.
 3. **Teams 401 Error**: Agent needs an Agent Instance + Agent User for authenticated replies in Teams.
-4. **SDK Naming**: The `ChatAgent` class was renamed to `Agent` in recent SDK versions.
-
+4. **SDK Naming**: The `ChatAgent` class was renamed to `Agent` in recent SDK versions. The `McpToolRegistrationService` internally uses the old name, causing a `TypeError`. The code works around this by manually extracting connected MCP tools.
 5. **`AADSTS65001` consent error**: Go to API permissions → click **Grant admin consent**.
 6. **`AADSTS7000215` invalid client secret**: Make sure you copied the **Value**, not the **Secret ID**. Regenerate if needed.
 7. **`Directory.AccessAsUser.All` blocking blueprint creation**: This permission may be injected by WAM. Clear token cache and re-authenticate.
+8. **WAM Token Cache**: Windows Account Manager may return expired tokens even with `--force-refresh`. Clear all cache directories before refreshing.
 
 ## 🛠️ Tech Stack
 
 - **Runtime**: Python 3.11+
 - **AI Model**: Azure OpenAI (GPT-5.2-chat)
 - **Agent SDK**: Microsoft Agent Framework + Agent 365 SDK
-- **MCP Tools**: MailTools (Outlook email read/write)
+- **MCP Tools**: Mail, Calendar, Teams, Word, Excel, Planner
 - **Web Framework**: aiohttp
-- **Database**: SQLite (chat history for web UI)
+- **Database**: SQLite (chat history + conversation memory for web UI)
 - **Hosting**: Azure VM (Ubuntu 22.04)
 - **Tunnel**: ngrok (HTTPS for Teams)
 

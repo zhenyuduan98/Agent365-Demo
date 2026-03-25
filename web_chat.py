@@ -1,6 +1,6 @@
 """
 Agent 365 Demo Web Chat - Azure OpenAI 聊天机器人
-纯聊天版（无 MCP）+ SQLite 历史记录持久化
+MCP 集成版 + SQLite 历史记录持久化 + 对话记忆
 """
 
 import asyncio
@@ -19,14 +19,24 @@ logger = logging.getLogger(__name__)
 
 os.environ["ENVIRONMENT"] = "Development"
 
-from agent_framework import Agent
+from agent_framework import Agent, AgentSession, Message
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.core.credentials import AzureKeyCredential
 
+# MCP Tooling
+from microsoft_agents_a365.tooling.extensions.agentframework.services.mcp_tool_registration_service import (
+    McpToolRegistrationService,
+)
+from local_authentication_options import LocalAuthenticationOptions
+
 SYSTEM_PROMPT = """You are a helpful AI assistant built with Microsoft Agent 365 framework.
 You can respond in both English and Chinese. Be friendly and concise.
-The user's name is User. Use their name naturally where appropriate.
-You are knowledgeable about Microsoft 365, Azure, and AI technologies."""
+The user's name is 振宇 (Zhenyu). Use their name naturally where appropriate.
+You are knowledgeable about Microsoft 365, Azure, and AI technologies.
+You have access to MCP tools for Microsoft 365 (Mail, Calendar, Teams, Word, Excel, Planner)."""
+
+# How many recent messages to include as context (user + bot pairs)
+MAX_HISTORY_MESSAGES = 20
 
 endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
@@ -42,6 +52,9 @@ chat_client = AzureOpenAIChatClient(
 )
 
 agent = None
+mcp_initialized = False
+# Keep per-session AgentSession objects in memory for SDK conversation tracking
+agent_sessions: dict[str, AgentSession] = {}
 
 # --- SQLite ---
 DB_PATH = Path(__file__).parent / "chat_history.db"
@@ -94,9 +107,50 @@ def delete_session(sid):
 init_db()
 
 async def create_agent():
-    global agent
+    global agent, mcp_initialized
     agent = Agent(client=chat_client, instructions=SYSTEM_PROMPT)
-    logger.info("✅ Agent created (chat only, no MCP)")
+    logger.info("✅ Agent created")
+
+    # Setup MCP (set MCP_ENABLE=true in .env to activate)
+    enable_mcp = os.getenv("MCP_ENABLE", "false").lower() == "true"
+    if enable_mcp:
+        try:
+            bearer_token = os.getenv("MCP_BEARER_TOKEN", "")
+            if bearer_token:
+                tool_service = McpToolRegistrationService()
+                try:
+                    mcp_agent = await tool_service.add_tool_servers_to_agent(
+                        chat_client=chat_client,
+                        agent_instructions=SYSTEM_PROMPT,
+                        initial_tools=[],
+                        auth=None,
+                        auth_handler_name=None,
+                        auth_token=bearer_token,
+                        turn_context=None,
+                    )
+                    if mcp_agent:
+                        agent = mcp_agent
+                        mcp_initialized = True
+                        logger.info("✅ MCP servers connected!")
+                    else:
+                        raise RuntimeError("add_tool_servers_to_agent returned None")
+                except TypeError as e:
+                    logger.info(f"⚠️ SDK compat issue ({e}), building Agent manually with MCP tools")
+                    mcp_tools = list(tool_service._connected_servers) if hasattr(tool_service, '_connected_servers') else []
+                    if mcp_tools:
+                        agent = Agent(client=chat_client, instructions=SYSTEM_PROMPT, tools=mcp_tools)
+                        mcp_initialized = True
+                        logger.info(f"✅ MCP connected manually with {len(mcp_tools)} tool(s)!")
+                    else:
+                        logger.warning("⚠️ No MCP tools found after setup")
+            else:
+                logger.warning("⚠️ MCP_BEARER_TOKEN not set, running chat-only mode")
+        except Exception as e:
+            logger.warning(f"⚠️ MCP setup failed: {e}, running chat-only mode")
+            agent = Agent(client=chat_client, instructions=SYSTEM_PROMPT)
+    else:
+        logger.info("ℹ️ MCP disabled (set MCP_ENABLE=true in .env to activate)")
+
     return agent
 
 # --- HTML ---
@@ -160,7 +214,7 @@ body{font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif;backgrou
 <div class="header">
  <div class="logo">🤖</div>
  <div><h1>Agent 365 Chat Demo</h1><div class="subtitle">Powered by Microsoft Agent Framework + Azure OpenAI</div></div>
- <div class="badge">💬 Chat Mode</div>
+ <div class="badge">🔧 MCP + Chat Mode</div>
 </div>
 <button class="toggle-sidebar" onclick="toggleSidebar()" title="Toggle history">☰</button>
 <div class="main-layout">
@@ -185,7 +239,7 @@ if(!sid){sid=genId();localStorage.setItem('a365_sid',sid)}
 function genId(){return 's_'+Date.now().toString(36)+'_'+Math.random().toString(36).substr(2,6)}
 function toggleSidebar(){sidebar.classList.toggle('collapsed')}
 function newChat(){sid=genId();localStorage.setItem('a365_sid',sid);chat.innerHTML='';welcome();loadSessions();input.focus()}
-function welcome(){addMsg("你好User！👋 我是 Agent 365 聊天助手。\n\n有什么可以帮你的？",'bot',false)}
+function welcome(){addMsg("你好振宇！👋 我是 Agent 365 聊天助手。\n\n有什么可以帮你的？",'bot',false)}
 async function loadHistory(id){
  try{const r=await fetch('/api/history?session_id='+encodeURIComponent(id));const d=await r.json();
  chat.innerHTML='';if(d.messages&&d.messages.length>0){for(const m of d.messages)addMsg(m.content,m.role,false)}else welcome();
@@ -231,7 +285,23 @@ async def handle_chat(request):
         save_msg(sid, "user", msg)
         if agent is None:
             await create_agent()
-        result = await agent.run(msg)
+
+        # Build conversation history as Message objects
+        history = get_history(sid)
+        messages = []
+        # Include up to MAX_HISTORY_MESSAGES recent messages (excluding the current one we just saved)
+        recent = history[-(MAX_HISTORY_MESSAGES + 1):-1] if len(history) > 1 else []
+        for h in recent:
+            role = "user" if h["role"] == "user" else "assistant"
+            messages.append(Message(role=role, text=h["content"]))
+        # Add current user message
+        messages.append(Message(role="user", text=msg))
+
+        # Get or create AgentSession for this conversation
+        if sid not in agent_sessions:
+            agent_sessions[sid] = AgentSession(session_id=sid)
+
+        result = await agent.run(messages, session=agent_sessions[sid])
         reply = ""
         for attr in ("contents", "text", "content"):
             if hasattr(result, attr):
@@ -241,7 +311,7 @@ async def handle_chat(request):
             reply = str(result)
         logger.info(f"🤖 [{sid[:12]}] {reply[:100]}...")
         save_msg(sid, "bot", reply)
-        return web.json_response({"reply": reply})
+        return web.json_response({"reply": reply, "mcp_enabled": mcp_initialized})
     except Exception as e:
         logger.error(f"❌ {e}", exc_info=True)
         return web.json_response({"reply": f"出错了: {e}"}, status=500)
@@ -250,7 +320,7 @@ async def handle_index(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
 async def handle_health(request):
-    return web.json_response({"status": "ok", "agent": "Agent365 Chat Demo", "model": deployment})
+    return web.json_response({"status": "ok", "agent": "Agent365 Chat Demo", "model": deployment, "mcp_enabled": mcp_initialized})
 
 async def handle_history(request):
     sid = request.query.get("session_id", "default")
@@ -263,6 +333,7 @@ async def handle_delete(request):
     sid = request.match_info.get("session_id", "")
     if sid:
         delete_session(sid)
+        agent_sessions.pop(sid, None)
     return web.json_response({"status": "ok"})
 
 app = web.Application()
@@ -281,10 +352,11 @@ app.on_startup.append(on_startup)
 if __name__ == "__main__":
     port = 3979
     print("=" * 50)
-    print("🤖 Agent 365 Chat Demo")
+    print("🤖 Agent 365 Chat Demo (MCP + Memory)")
     print(f"🚀 http://localhost:{port}")
     print(f"📡 Azure OpenAI: {endpoint}")
     print(f"🧠 Model: {deployment}")
     print(f"💾 History: {DB_PATH}")
+    print(f"🔧 MCP: ToolingManifest.json")
     print("=" * 50)
     web.run_app(app, host="0.0.0.0", port=port)
