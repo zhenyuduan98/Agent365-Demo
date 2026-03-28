@@ -26,7 +26,7 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 ### 完整消息工作流
 
 ```
-用户在 Teams 输入 "你好"
+用户在 Teams 输入 "帮我看看最近的邮件"
  │
  ▼
 ① Teams 客户端 → Teams 云服务 (POST 消息, 201 Created)
@@ -55,24 +55,45 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 ⑥ agent.py 处理消息
    → 拿到用户名 (from_property.name)
    → 注入个性化 prompt
+   → 首次消息时调用 setup_mcp_servers()
+     → McpToolRegistrationService 读取 ToolingManifest.json
+     → 使用 MCP_BEARER_TOKEN 连接 6 个 MCP Server
+       (Mail, Calendar, Teams, Word, Excel, Planner)
+     → MCP 工具注册到 Agent 的 tools 列表中
    → 调用 self.agent.run(message)
  │
  ▼
 ⑦ AgentFramework SDK → Azure OpenAI API
    POST https://<endpoint>/chat/completions
-   Body: system prompt + user message
+   Body: system prompt + user message + MCP tool definitions
+   （LLM 看到可用的 MCP 工具列表）
  │
  ▼
-⑧ Azure OpenAI 返回 LLM 响应
+⑧ Azure OpenAI 返回 tool_call 决策
+   （LLM 判断需要调用 mcp_MailTools 的 list_messages）
  │
  ▼
-⑨ agent.py 提取结果 → context.send_activity(response)
+⑨ AgentFramework SDK 执行 MCP 工具调用
+   → POST https://agent365.svc.cloud.microsoft/agents/servers/mcp_MailTools
+   → Header: Authorization Bearer <MCP_BEARER_TOKEN>
+   → MCP Server 返回邮件数据
  │
  ▼
-⑩ SDK 通过 Bot Framework API 回复 Teams
+⑩ SDK 将 MCP 工具结果回传给 Azure OpenAI
+   → LLM 基于邮件数据生成自然语言回复
+ │
+ ▼
+⑪ agent.py 提取最终结果 → context.send_activity(response)
+ │
+ ▼
+⑫ SDK 通过 Bot Framework API 回复 Teams
    使用 CLIENT_SECRET 认证
    消息出现在用户的 Teams 对话中
 ```
+
+> 💡 **关于 MCP Token**: `MCP_BEARER_TOKEN` 是通过 `a365 develop get-token` 获取的 OAuth2 令牌，用于认证 MCP Server 调用。该 token 有效期为 **1 小时**，过期后需要重新获取。Token 的 audience 是 `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1`（Agent 365 Tools MCP resource）。
+>
+> 💡 **MCP 工具调用流程**: 当 LLM 判断需要使用工具时（如读邮件），会返回 `tool_call`，SDK 自动执行对应的 MCP 调用并将结果返回给 LLM 生成最终回复。这是一个多轮调用过程（LLM → tool_call → MCP → result → LLM → 最终回复）。
 
 ### MCP Servers Integrated
 
