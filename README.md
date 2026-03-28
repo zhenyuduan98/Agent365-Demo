@@ -8,26 +8,68 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 
 ## 🏗️ Architecture Overview
 
-```
-┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Microsoft   │────▶│  Agent Host      │────▶│  Azure OpenAI   │
-│  Teams       │◀────│  (Python/aiohttp) │◀────│  (GPT-5.2-chat) │
-└──────────────┘     └────────┬─────────┘     └─────────────────┘
-                              │
-                     ┌────────▼─────────┐
-                     │  MCP Servers     │
-                     │  (M365 Services) │
-                     └──────────────────┘
+![Architecture Overview](docs/images/architecture.png)
 
-┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Web Browser │────▶│  Web Chat Server │────▶│  Azure OpenAI   │
-│              │◀────│  (aiohttp:3979)  │◀────│  (GPT-5.2-chat) │
-└──────────────┘     └────────┬─────────┘     └─────────────────┘
-                              │
-                     ┌────────▼─────────┐
-                     │  MCP Servers     │
-                     │  (M365 Services) │
-                     └──────────────────┘
+### 各组件部署位置
+
+| 组件 | 部署位置 | 说明 |
+|------|----------|------|
+| **前端** | Microsoft Teams (云端) | 微软托管，不需要我们部署 |
+| **消息路由** | Agent 365 Platform (云端) | 微软托管，根据 Blueprint + Endpoint 路由消息 |
+| **ngrok 隧道** | Azure VM (`128.85.34.109`) | 把公网 HTTPS 转发到本地 3978 端口 |
+| **Agent 后端** | Azure VM (`localhost:3978`) | Python aiohttp 服务器 |
+| **LLM** | Azure OpenAI (East US 2) | `gpt-5.2-chat` deployment |
+| **身份认证** | Entra ID (云端) | Blueprint + Instance 身份管理 |
+
+### 完整消息工作流
+
+```
+用户在 Teams 输入 "你好"
+ │
+ ▼
+① Teams 客户端 → Teams 云服务 (POST 消息, 201 Created)
+ │
+ ▼
+② Teams 云服务 → Agent 365 Platform
+   根据 Instance ID 找到 Blueprint
+   根据 Blueprint 找到注册的 Endpoint
+ │
+ ▼
+③ Agent 365 Platform → ngrok URL
+   POST https://<ngrok-url>/api/messages
+   Body: Activity JSON (包含用户消息、用户身份、对话ID等)
+   Header: Authorization Bearer JWT (Bot Framework token)
+ │
+ ▼
+④ ngrok → localhost:3978/api/messages
+ │
+ ▼
+⑤ host_agent_server.py 收到请求
+   → JWT 验证 (或 anonymous mode)
+   → 解析 Activity
+   → 调用 on_message handler
+ │
+ ▼
+⑥ agent.py 处理消息
+   → 拿到用户名 (from_property.name)
+   → 注入个性化 prompt
+   → 调用 self.agent.run(message)
+ │
+ ▼
+⑦ AgentFramework SDK → Azure OpenAI API
+   POST https://<endpoint>/chat/completions
+   Body: system prompt + user message
+ │
+ ▼
+⑧ Azure OpenAI 返回 LLM 响应
+ │
+ ▼
+⑨ agent.py 提取结果 → context.send_activity(response)
+ │
+ ▼
+⑩ SDK 通过 Bot Framework API 回复 Teams
+   使用 CLIENT_SECRET 认证
+   消息出现在用户的 Teams 对话中
 ```
 
 ### MCP Servers Integrated
@@ -89,6 +131,102 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 6. Azure OpenAI processes (may call MCP tools), returns response
 7. Response saved to SQLite, returned as JSON
 8. UI renders the response
+
+## 🔍 关键源代码解析
+
+### 1. `start_with_generic_host.py` — 入口（最简单）
+
+```python
+from agent import Eva365Agent
+from host_agent_server import create_and_run_host
+
+def main():
+    create_and_run_host(Eva365Agent)  # 一行启动
+```
+
+**作用**: 把 Agent 类传给 Host，启动服务器。
+
+### 2. `host_agent_server.py` — 服务器 + 消息路由（核心）
+
+**初始化:**
+```python
+self.connection_manager = MsalConnectionManager(**agents_sdk_config)  # MSAL 认证
+self.adapter = CloudAdapter(connection_manager=self.connection_manager)  # HTTP 适配器
+self.agent_app = AgentApplication[TurnState](...)  # Agent 应用框架
+```
+→ `MsalConnectionManager` 需要 `CONNECTIONS__SERVICE_CONNECTION__*` 环境变量。
+
+**消息处理:**
+```python
+@self.agent_app.activity("message")
+async def on_message(context: TurnContext, _: TurnState):
+    user_message = context.activity.text
+    response = await self.agent_instance.process_user_message(
+        user_message, self.agent_app.auth, self.auth_handler_name, context
+    )
+    await context.send_activity(response)
+```
+→ `TurnContext` 是 Bot Framework 的核心概念，封装了一次对话"回合"。
+
+**认证模式:**
+```python
+def create_auth_configuration(self):
+    if client_id and tenant_id and client_secret:
+        return AgentAuthConfiguration(
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=["5a807f24-.../.default"],
+        )
+    return None  # Anonymous mode
+```
+
+**HTTP 服务器:**
+```python
+app.router.add_post("/api/messages", entry_point)  # Bot Framework 消息入口
+app.router.add_get("/api/health", health)           # 健康检查
+run_app(app, host="localhost", port=3978)
+```
+
+### 3. `agent.py` — AI Agent 逻辑（业务核心）
+
+**创建 LLM 客户端:**
+```python
+self.chat_client = AzureOpenAIChatClient(
+    endpoint=endpoint,
+    credential=credential,
+    deployment_name=deployment,  # gpt-5.2-chat
+    api_version=api_version,
+)
+```
+
+**创建 Agent:**
+```python
+self.agent = Agent(
+    client=self.chat_client,
+    instructions=self.AGENT_PROMPT,
+    tools=[],  # 无工具（纯聊天）；加 MCP 工具在这里扩展
+)
+```
+
+**处理消息:**
+```python
+async def process_user_message(self, message, auth, auth_handler_name, context):
+    display_name = context.activity.from_property.name
+    personalized_prompt = self.AGENT_PROMPT.replace("{user_name}", display_name)
+    self.agent._instructions = personalized_prompt
+    result = await self.agent.run(message)
+    return self._extract_result(result)
+```
+
+### 4. `agent_interface.py` — 抽象接口
+
+```python
+class AgentInterface(ABC):
+    async def initialize(self) -> None: ...
+    async def process_user_message(self, message, auth, handler, context) -> str: ...
+    async def cleanup(self) -> None: ...
+```
+→ 所有 Agent 必须实现这三个方法。想换 Agent 只需要写一个新类继承它。
 
 ## ✅ Prerequisites
 
