@@ -1,4 +1,4 @@
-# 🤖 Agent365-Demo
+# Agent365-Demo
 
 ## 📖 Overview
 
