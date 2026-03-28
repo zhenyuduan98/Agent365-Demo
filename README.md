@@ -8,9 +8,9 @@ This is a demo project showcasing **Microsoft Agent 365 (A365)** — Microsoft's
 
 ## 🏗️ Architecture Overview
 
-![Architecture Overview](docs/images/architecture.png)
-
 ![Architecture Detailed](docs/images/architecture-detailed.png)
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/4f8dcd85-2d73-4b7f-a8c5-f25ca6953db8" />
+
 
 ### 各组件部署位置
 
